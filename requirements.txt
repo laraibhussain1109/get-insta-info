@@ -1,0 +1,2 @@
+# No runtime dependencies are required for the MVP scaffold.
+# The service uses Python's standard library so it can run in restricted environments.
