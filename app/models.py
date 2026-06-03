@@ -18,6 +18,7 @@ class MetricSource(str, Enum):
     LICENSED_PROVIDER = "licensed_provider"
     FIRST_PARTY_IMPORT = "first_party_import"
     ESTIMATE = "estimate"
+    CRAWLER = "crawler"
 
 
 def normalize_username(username: str) -> str:

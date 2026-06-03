@@ -2,20 +2,30 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from app.models import BatchRequest, ValidationError
-from app.providers import MockProvider
+from app.providers import MockProvider, PublicInstagramCrawlerProvider
 from app.repositories import InsightsRepository
 from app.services.estimator import InsightsEstimator
 from app.services.orchestrator import InsightsOrchestrator
 
 _repository = InsightsRepository(ttl_hours=24)
-_provider = MockProvider()
 _estimator = InsightsEstimator()
+
+
+def build_provider() -> MockProvider | PublicInstagramCrawlerProvider:
+    provider_name = os.getenv("INSIGHTS_PROVIDER", "crawler").lower()
+    if provider_name == "mock":
+        return MockProvider()
+    return PublicInstagramCrawlerProvider()
+
+
+_provider = build_provider()
 _orchestrator = InsightsOrchestrator(_provider, _estimator, _repository)
 
 
@@ -40,7 +50,11 @@ class InsightsRequestHandler(BaseHTTPRequestHandler):
             if len(parts) == 4 and parts[3] != "insights":
                 self._write_json(HTTPStatus.NOT_FOUND, {"detail": "not found"})
                 return
-            window = int(query.get("window", ["30"])[0])
+            try:
+                window = int(query.get("window", ["30"])[0])
+            except ValueError:
+                self._write_json(HTTPStatus.UNPROCESSABLE_ENTITY, {"detail": "window must be an integer"})
+                return
             refresh = query.get("refresh", ["false"])[0].lower() == "true"
             self._run_insights(username, window, refresh)
             return
@@ -71,6 +85,9 @@ class InsightsRequestHandler(BaseHTTPRequestHandler):
             insights = asyncio.run(get_orchestrator().get_insights(username, window, refresh=refresh))
         except ValidationError as exc:
             self._write_json(HTTPStatus.UNPROCESSABLE_ENTITY, {"detail": str(exc)})
+            return
+        except RuntimeError as exc:
+            self._write_json(HTTPStatus.BAD_GATEWAY, {"detail": str(exc)})
             return
         self._write_json(HTTPStatus.OK, insights.to_dict())
 
