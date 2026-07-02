@@ -18,11 +18,8 @@ from app.providers.instagram_crawler import (
 )
 
 INSTAGRAM_POST_RE = re.compile(r"^/(?:p|reel|tv)/(?P<shortcode>[A-Za-z0-9_-]+)/?")
-DESCRIPTION_METRIC_RE = re.compile(
-    r"(?:(?P<likes>[\d.,]+\s*[KMB]?)\s+likes?)?.*?"
-    r"(?:(?P<comments>[\d.,]+\s*[KMB]?)\s+comments?)?",
-    re.IGNORECASE | re.DOTALL,
-)
+DESCRIPTION_LIKES_RE = re.compile(r"(?P<count>[\d.,]+\s*[KMB]?)\s+likes?", re.IGNORECASE)
+DESCRIPTION_COMMENTS_RE = re.compile(r"(?P<count>[\d.,]+\s*[KMB]?)\s+comments?", re.IGNORECASE)
 
 
 @dataclass(slots=True)
@@ -32,6 +29,9 @@ class PublicPostMetrics:
     likes: int | None = None
     comments: int | None = None
     views: int | None = None
+    shares: int | None = None
+    saves: int | None = None
+    reposts: int | None = None
     source: str = "public_html"
     error: str | None = None
 
@@ -69,7 +69,7 @@ def parse_public_post_metrics(url: str, shortcode: str, html: str) -> PublicPost
         for blob in extract_balanced_json_objects(script):
             _merge_metrics(metrics, _walk_for_shortcode_metrics(blob, shortcode))
 
-    if metrics.likes is None and metrics.comments is None and metrics.views is None:
+    if all(getattr(metrics, field) is None for field in ("likes", "comments", "views", "shares", "saves", "reposts")):
         metrics.error = "no public counts found in page HTML"
     return metrics
 
@@ -106,7 +106,7 @@ def update_workbook_with_metrics(
     workbook = load_workbook(source)
     sheet = workbook.active
 
-    headers = ["views", "likes", "comments", "shortcode", "source", "error"]
+    headers = ["views", "likes", "comments", "shares", "saves", "reposts", "shortcode", "source", "error"]
     start_column = sheet.max_column + 1
     for offset, header in enumerate(headers):
         sheet.cell(row=1, column=start_column + offset, value=header)
@@ -119,7 +119,7 @@ def update_workbook_with_metrics(
             metrics = fetch_public_post_metrics(str(link), fetcher=fetcher)
         except ValueError as exc:
             metrics = PublicPostMetrics(url=str(link), shortcode="", error=str(exc))
-        values = [metrics.views, metrics.likes, metrics.comments, metrics.shortcode, metrics.source, metrics.error]
+        values = [metrics.views, metrics.likes, metrics.comments, metrics.shares, metrics.saves, metrics.reposts, metrics.shortcode, metrics.source, metrics.error]
         for offset, value in enumerate(values):
             sheet.cell(row=row, column=start_column + offset, value=value)
 
@@ -144,7 +144,7 @@ def update_csv_with_metrics(
     with source.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.reader(handle))
 
-    headers = ["views", "likes", "comments", "shortcode", "source", "error"]
+    headers = ["views", "likes", "comments", "shares", "saves", "reposts", "shortcode", "source", "error"]
     if rows:
         rows[0].extend(headers)
     else:
@@ -158,7 +158,17 @@ def update_csv_with_metrics(
             metrics = fetch_public_post_metrics(row[url_index], fetcher=fetcher)
         except ValueError as exc:
             metrics = PublicPostMetrics(url=row[url_index], shortcode="", error=str(exc))
-        row.extend([_cell(metrics.views), _cell(metrics.likes), _cell(metrics.comments), metrics.shortcode, metrics.source, metrics.error or ""])
+        row.extend([
+            _cell(metrics.views),
+            _cell(metrics.likes),
+            _cell(metrics.comments),
+            _cell(metrics.shares),
+            _cell(metrics.saves),
+            _cell(metrics.reposts),
+            metrics.shortcode,
+            metrics.source,
+            metrics.error or "",
+        ])
 
     with destination.open("w", newline="", encoding="utf-8") as handle:
         csv.writer(handle).writerows(rows)
@@ -179,14 +189,13 @@ def _cell(value: int | None) -> int | str:
 
 
 def _metrics_from_description(description: str) -> dict[str, int]:
-    match = DESCRIPTION_METRIC_RE.search(description)
-    if not match:
-        return {}
     found: dict[str, int] = {}
-    for key in ("likes", "comments"):
-        raw = match.group(key)
-        if raw:
-            found[key] = parse_count(raw)
+    likes = DESCRIPTION_LIKES_RE.search(description)
+    comments = DESCRIPTION_COMMENTS_RE.search(description)
+    if likes:
+        found["likes"] = parse_count(likes.group("count"))
+    if comments:
+        found["comments"] = parse_count(comments.group("count"))
     return found
 
 
@@ -208,16 +217,30 @@ def _walk_for_shortcode_metrics(value: object, shortcode: str) -> dict[str, int]
 
 def _metrics_from_node(node: dict[str, object]) -> dict[str, int]:
     metrics: dict[str, int] = {}
-    likes = count_from_edge(node.get("edge_liked_by")) or count_from_edge(node.get("edge_media_preview_like"))
-    comments = count_from_edge(node.get("edge_media_to_comment"))
-    views = count_from_edge(node.get("video_view_count"))
-    if likes:
-        metrics["likes"] = likes
-    if comments:
-        metrics["comments"] = comments
-    if views:
-        metrics["views"] = views
+    candidates = {
+        "likes": ("edge_liked_by", "edge_media_preview_like", "like_count", "likes_count"),
+        "comments": ("edge_media_to_comment", "comment_count", "comments_count"),
+        "views": ("video_view_count", "play_count", "view_count", "ig_play_count"),
+        "shares": ("share_count", "shares_count"),
+        "saves": ("save_count", "saved_count", "saves_count"),
+        "reposts": ("repost_count", "reshare_count", "reshare_count_v2", "clips_reshare_count"),
+    }
+    for metric_name, keys in candidates.items():
+        value = _first_count_for_keys(node, keys)
+        if value is not None:
+            metrics[metric_name] = value
     return metrics
+
+
+def _first_count_for_keys(node: dict[str, object], keys: tuple[str, ...]) -> int | None:
+    for key in keys:
+        value = node.get(key)
+        count = count_from_edge(value)
+        if count:
+            return count
+        if isinstance(value, float):
+            return int(value)
+    return None
 
 
 def _merge_metrics(target: PublicPostMetrics, updates: dict[str, int]) -> None:

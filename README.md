@@ -84,7 +84,7 @@ If you have a spreadsheet of public Instagram post links, run the enrichment CLI
 python -m app.excel_insights campaign_links.xlsx --url-column A --first-data-row 2
 ```
 
-The command writes a new workbook named `campaign_links_with_insights.xlsx` by default and adds `views`, `likes`, `comments`, `shortcode`, `source`, and `error` columns. CSV files are also supported without extra packages:
+The command writes a new workbook named `campaign_links_with_insights.xlsx` by default and adds `views`, `likes`, `comments`, `shares`, `saves`, `reposts`, `shortcode`, `source`, and `error` columns. CSV files are also supported without extra packages:
 
 ```bash
 python -m app.excel_insights campaign_links.csv --url-column A --first-data-row 2
@@ -96,4 +96,4 @@ For `.xlsx` input, install the runtime dependency first:
 pip install -r requirements.txt
 ```
 
-The tool only reads counts that are present in public post HTML/embedded JSON for `/p/`, `/reel/`, or `/tv/` links. It does not log in, scrape private insights, rotate proxies, bypass access controls, or guarantee counts when Instagram does not expose them publicly.
+The tool only reads counts that are present in public post HTML/embedded JSON for `/p/`, `/reel/`, or `/tv/` links. Comments are parsed from both public metadata and common embedded JSON fields. Shares, saves, and reposts are written when Instagram exposes matching public fields, but these values are often private/non-public and will be blank when absent. The tool does not log in, scrape private insights, rotate proxies, bypass access controls, or guarantee counts when Instagram does not expose them publicly.
