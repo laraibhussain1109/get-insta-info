@@ -75,3 +75,25 @@ pytest
 6. Add a job queue for refreshes and batch requests.
 7. Add model training pipelines with labeled data from opted-in creators.
 8. Audit all data access and expose confidence/source fields to downstream users.
+
+## Excel/CSV post metrics enrichment
+
+If you have a spreadsheet of public Instagram post links, run the enrichment CLI to append public counts next to each link:
+
+```bash
+python -m app.excel_insights campaign_links.xlsx --url-column A --first-data-row 2
+```
+
+The command writes a new workbook named `campaign_links_with_insights.xlsx` by default and adds `views`, `likes`, `comments`, `shortcode`, `source`, and `error` columns. CSV files are also supported without extra packages:
+
+```bash
+python -m app.excel_insights campaign_links.csv --url-column A --first-data-row 2
+```
+
+For `.xlsx` input, install the runtime dependency first:
+
+```bash
+pip install -r requirements.txt
+```
+
+The tool only reads counts that are present in public post HTML/embedded JSON for `/p/`, `/reel/`, or `/tv/` links. It does not log in, scrape private insights, rotate proxies, bypass access controls, or guarantee counts when Instagram does not expose them publicly.

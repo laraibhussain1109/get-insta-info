@@ -1,2 +1,3 @@
-# No runtime dependencies are required for the MVP scaffold.
-# The service uses Python's standard library so it can run in restricted environments.
+# Runtime dependency for reading and writing .xlsx workbooks in app.excel_insights.
+# CSV enrichment and the HTTP API otherwise use the Python standard library.
+openpyxl==3.1.5
