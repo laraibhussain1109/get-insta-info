@@ -81,13 +81,21 @@ pytest
 If you have a spreadsheet of public Instagram post links, run the enrichment CLI to append public counts next to each link:
 
 ```bash
-python -m app.excel_insights campaign_links.xlsx --url-column A --first-data-row 2
+python -m app.excel_insights campaign_links.xlsx --url-column A --first-data-row 2 --fetch-mode browser
 ```
 
 The command writes a new workbook named `campaign_links_with_insights.xlsx` by default and adds `views`, `likes`, `comments`, `shares`, `saves`, `reposts`, `shortcode`, `source`, and `error` columns. CSV files are also supported without extra packages:
 
 ```bash
-python -m app.excel_insights campaign_links.csv --url-column A --first-data-row 2
+python -m app.excel_insights campaign_links.csv --url-column A --first-data-row 2 --fetch-mode browser
+```
+
+
+`--fetch-mode http` is the default lightweight fetcher. Use `--fetch-mode browser` when Instagram only exposes public metrics after page rendering or in public JSON/XHR responses. Browser mode requires Playwright:
+
+```bash
+pip install playwright
+python -m playwright install chromium
 ```
 
 For `.xlsx` input, install the runtime dependency first:
@@ -96,4 +104,4 @@ For `.xlsx` input, install the runtime dependency first:
 pip install -r requirements.txt
 ```
 
-The tool only reads counts that are present in public post HTML/embedded JSON for `/p/`, `/reel/`, or `/tv/` links. Comments are parsed from both public metadata and common embedded JSON fields. Views and shares are parsed from common public embedded JSON field variants, including nested media/insights objects. Shares, saves, and reposts are written when Instagram exposes matching public fields, but these values are often private/non-public and will be blank when absent. The tool does not log in, scrape private insights, rotate proxies, bypass access controls, or guarantee counts when Instagram does not expose them publicly.
+The tool only reads counts that are present in public post HTML/embedded JSON for `/p/`, `/reel/`, or `/tv/` links. Comments are parsed from both public metadata and common embedded JSON fields. Views and shares are parsed from common public embedded JSON field variants, including nested media/insights objects and browser-captured public JSON responses. Shares, saves, and reposts are written when Instagram exposes matching public fields, but these values are often private/non-public and will be blank when absent. The tool does not log in, scrape private insights, rotate proxies, bypass access controls, or guarantee counts when Instagram does not expose them publicly.

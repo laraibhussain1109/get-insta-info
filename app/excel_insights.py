@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib.util
+import json
 import re
 import urllib.error
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Protocol
 from urllib.parse import urlparse
 
 from app.providers.instagram_crawler import (
@@ -16,6 +18,73 @@ from app.providers.instagram_crawler import (
     extract_balanced_json_objects,
     parse_count,
 )
+
+
+class PostHtmlFetcher(Protocol):
+    def fetch(self, url: str) -> str:
+        """Fetch a public Instagram post URL and return HTML plus any captured JSON."""
+
+
+class BrowserHtmlFetcher:
+    """Render public post pages and capture public JSON responses with Playwright.
+
+    This is a crawler mode for public pages only. It does not log in, set cookies,
+    rotate proxies, solve challenges, or bypass access controls.
+    """
+
+    def __init__(self, timeout_seconds: int = 30) -> None:
+        self.timeout_seconds = timeout_seconds
+
+    def fetch(self, url: str) -> str:
+        if importlib.util.find_spec("playwright") is None:
+            raise RuntimeError(
+                "Browser crawler mode requires Playwright. Install it with: "
+                "pip install playwright && python -m playwright install chromium"
+            )
+
+        from playwright.sync_api import sync_playwright
+
+        captured_json: list[object] = []
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page(
+                user_agent="get-insta-info/0.1 public metrics crawler",
+                locale="en-US",
+            )
+
+            def capture_response(response: object) -> None:
+                content_type = response.headers.get("content-type", "")
+                if "json" not in content_type.lower() and "graphql" not in response.url.lower():
+                    return
+                if not any(marker in response.url for marker in ("instagram.com", "graphql", "api")):
+                    return
+                body = response.text()
+                if not any(marker in body for marker in PUBLIC_METRIC_MARKERS):
+                    return
+                try:
+                    captured_json.append(json.loads(body))
+                except json.JSONDecodeError:
+                    return
+
+            page.on("response", capture_response)
+            page.goto(url, wait_until="networkidle", timeout=self.timeout_seconds * 1000)
+            html = page.content()
+            browser.close()
+
+        if not captured_json:
+            return html
+        json_scripts = "".join(
+            f'<script type="application/json">{json.dumps(item)}</script>' for item in captured_json
+        )
+        return html + json_scripts
+
+
+def build_fetcher(mode: str) -> PostHtmlFetcher:
+    if mode == "http":
+        return UrllibHtmlFetcher()
+    if mode == "browser":
+        return BrowserHtmlFetcher()
+    raise ValueError("fetch mode must be 'http' or 'browser'")
 
 INSTAGRAM_POST_RE = re.compile(r"^/(?:p|reel|tv)/(?P<shortcode>[A-Za-z0-9_-]+)/?")
 DESCRIPTION_LIKES_RE = re.compile(r"(?P<count>[\d.,]+\s*[KMB]?)\s+likes?", re.IGNORECASE)
@@ -56,12 +125,12 @@ def extract_shortcode(url: str) -> str:
     return match.group("shortcode")
 
 
-def fetch_public_post_metrics(url: str, fetcher: UrllibHtmlFetcher | None = None) -> PublicPostMetrics:
+def fetch_public_post_metrics(url: str, fetcher: PostHtmlFetcher | None = None) -> PublicPostMetrics:
     shortcode = extract_shortcode(url)
     fetcher = fetcher or UrllibHtmlFetcher()
     try:
         html = fetcher.fetch(url)
-    except urllib.error.URLError as exc:
+    except (RuntimeError, urllib.error.URLError) as exc:
         return PublicPostMetrics(url=url, shortcode=shortcode, error=f"could not fetch public HTML: {exc}")
 
     return parse_public_post_metrics(url, shortcode, html)
@@ -90,7 +159,7 @@ def update_spreadsheet_with_metrics(
     *,
     url_column: str = "A",
     first_data_row: int = 2,
-    fetcher: UrllibHtmlFetcher | None = None,
+    fetcher: PostHtmlFetcher | None = None,
 ) -> Path:
     source = Path(input_path)
     if source.suffix.lower() == ".csv":
@@ -104,7 +173,7 @@ def update_workbook_with_metrics(
     *,
     url_column: str = "A",
     first_data_row: int = 2,
-    fetcher: UrllibHtmlFetcher | None = None,
+    fetcher: PostHtmlFetcher | None = None,
 ) -> Path:
     try:
         from openpyxl import load_workbook
@@ -144,7 +213,7 @@ def update_csv_with_metrics(
     *,
     url_column: str = "A",
     first_data_row: int = 2,
-    fetcher: UrllibHtmlFetcher | None = None,
+    fetcher: PostHtmlFetcher | None = None,
 ) -> Path:
     source = Path(input_path)
     destination = Path(output_path) if output_path else source.with_name(f"{source.stem}_with_insights{source.suffix}")
@@ -296,12 +365,19 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--output", help="Output path. Defaults to *_with_insights using the same extension")
     parser.add_argument("--url-column", default="A", help="Column containing Instagram links, e.g. A or B")
     parser.add_argument("--first-data-row", type=int, default=2, help="First row containing links")
+    parser.add_argument(
+        "--fetch-mode",
+        choices=("http", "browser"),
+        default="http",
+        help="Use browser mode to render public pages and capture public JSON responses.",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
     destination = update_spreadsheet_with_metrics(
         args.input,
         args.output,
         url_column=args.url_column,
         first_data_row=args.first_data_row,
+        fetcher=build_fetcher(args.fetch_mode),
     )
     print(f"Wrote public metrics to {destination}")
 

@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from app.excel_insights import extract_shortcode, parse_public_post_metrics, update_csv_with_metrics
+import pytest
+
+from app.excel_insights import build_fetcher, extract_shortcode, parse_public_post_metrics, update_csv_with_metrics
 
 POST_HTML = """
 <html><head>
@@ -22,6 +24,11 @@ class FixtureFetcher:
 def test_extract_shortcode_from_instagram_post_url() -> None:
     assert extract_shortcode("https://www.instagram.com/p/ABC123/?utm_source=x") == "ABC123"
     assert extract_shortcode("https://www.instagram.com/reel/XYZ_9/") == "XYZ_9"
+
+
+def test_build_fetcher_rejects_unknown_mode() -> None:
+    with pytest.raises(ValueError):
+        build_fetcher("invalid")
 
 
 def test_parse_public_post_metrics_prefers_embedded_json_counts() -> None:
