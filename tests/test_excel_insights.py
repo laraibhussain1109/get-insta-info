@@ -44,6 +44,17 @@ def test_parse_public_post_metrics_prefers_embedded_json_counts() -> None:
     assert metrics.error is None
 
 
+def test_parse_public_post_metrics_reads_browser_dom_metrics_script() -> None:
+    html = '<html><head><script type="application/json">{"shortcode":"ABC123","views":"1.2K","shares":4,"reposts":4}</script></head></html>'
+
+    metrics = parse_public_post_metrics("https://www.instagram.com/reel/ABC123/", "ABC123", html)
+
+    assert metrics.views == 1200
+    assert metrics.shares == 4
+    assert metrics.reposts == 4
+    assert metrics.error is None
+
+
 def test_parse_public_post_metrics_uses_description_comments_without_json() -> None:
     html = '<html><head><meta property="og:description" content="2.5K likes, 101 comments - Campaign post"></head></html>'
 

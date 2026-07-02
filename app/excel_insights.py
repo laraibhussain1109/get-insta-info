@@ -68,6 +68,9 @@ class BrowserHtmlFetcher:
 
             page.on("response", capture_response)
             page.goto(url, wait_until="networkidle", timeout=self.timeout_seconds * 1000)
+            dom_metrics = self._extract_dom_metrics(page, url)
+            if dom_metrics:
+                captured_json.append(dom_metrics)
             html = page.content()
             browser.close()
 
@@ -77,6 +80,57 @@ class BrowserHtmlFetcher:
             f'<script type="application/json">{json.dumps(item)}</script>' for item in captured_json
         )
         return html + json_scripts
+
+    def _extract_dom_metrics(self, page: object, url: str) -> dict[str, object]:
+        shortcode = extract_shortcode(url)
+        metrics = page.evaluate(
+            r"""
+            () => {
+              const parseCount = (value) => {
+                if (!value) return null;
+                const normalized = String(value).replace(/,/g, '').trim();
+                const match = normalized.match(/(\d+(?:\.\d+)?)\s*([KMB])?/i);
+                if (!match) return null;
+                const multipliers = {K: 1000, M: 1000000, B: 1000000000};
+                return Math.round(Number(match[1]) * (multipliers[(match[2] || '').toUpperCase()] || 1));
+              };
+
+              const text = document.body ? document.body.innerText : '';
+              const metricPatterns = {
+                likes: /(\d[\d,.]*\s*[KMB]?)\s+likes?/i,
+                comments: /(\d[\d,.]*\s*[KMB]?)\s+comments?/i,
+                views: /(\d[\d,.]*\s*[KMB]?)\s+(?:views?|plays?)/i,
+                shares: /(\d[\d,.]*\s*[KMB]?)\s+shares?/i,
+                reposts: /(\d[\d,.]*\s*[KMB]?)\s+(?:reposts?|reshares?)/i,
+              };
+              const metrics = {};
+              for (const [name, pattern] of Object.entries(metricPatterns)) {
+                const match = text.match(pattern);
+                const count = match ? parseCount(match[1]) : null;
+                if (count !== null) metrics[name] = count;
+              }
+
+              const buttonCounts = Array.from(document.querySelectorAll('[role="button"]'))
+                .map((node) => node.innerText || node.textContent || '')
+                .map((value) => value.trim())
+                .filter((value) => /^(?:\d[\d,.]*\s*[KMB]?)$/i.test(value))
+                .map(parseCount)
+                .filter((value) => value !== null);
+
+              if (metrics.likes == null && buttonCounts.length >= 1) metrics.likes = buttonCounts[0];
+              if (metrics.comments == null && buttonCounts.length >= 2) metrics.comments = buttonCounts[1];
+              if (metrics.reposts == null && buttonCounts.length >= 3) metrics.reposts = buttonCounts[2];
+              if (metrics.shares == null && buttonCounts.length >= 3) metrics.shares = buttonCounts[2];
+
+              return metrics;
+            }
+            """
+        )
+        if not isinstance(metrics, dict):
+            return {}
+        metrics["shortcode"] = shortcode
+        metrics["source"] = "browser_dom"
+        return metrics
 
 
 def build_fetcher(mode: str) -> PostHtmlFetcher:
@@ -315,8 +369,8 @@ def _collect_metrics_from_subtree(value: object) -> dict[str, int]:
 def _metrics_from_node(node: dict[str, object]) -> dict[str, int]:
     metrics: dict[str, int] = {}
     candidates = {
-        "likes": ("edge_liked_by", "edge_media_preview_like", "like_count", "likes_count"),
-        "comments": ("edge_media_to_comment", "comment_count", "comments_count"),
+        "likes": ("likes", "edge_liked_by", "edge_media_preview_like", "like_count", "likes_count"),
+        "comments": ("comments", "edge_media_to_comment", "comment_count", "comments_count"),
         "views": (
             "video_view_count",
             "video_play_count",
@@ -326,10 +380,11 @@ def _metrics_from_node(node: dict[str, object]) -> dict[str, int]:
             "viewCount",
             "playCount",
             "videoViewCount",
+            "views",
         ),
-        "shares": ("share_count", "shares_count", "shareCount", "reshare_count", "reshareCount"),
-        "saves": ("save_count", "saved_count", "saves_count", "saveCount"),
-        "reposts": ("repost_count", "repostCount", "reshare_count", "reshare_count_v2", "clips_reshare_count"),
+        "shares": ("shares", "share_count", "shares_count", "shareCount", "reshare_count", "reshareCount"),
+        "saves": ("saves", "save_count", "saved_count", "saves_count", "saveCount"),
+        "reposts": ("reposts", "repost_count", "repostCount", "reshare_count", "reshare_count_v2", "clips_reshare_count"),
     }
     for metric_name, keys in candidates.items():
         value = _first_count_for_keys(node, keys)
