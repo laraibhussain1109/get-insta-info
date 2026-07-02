@@ -2,7 +2,14 @@ from pathlib import Path
 
 import pytest
 
-from app.excel_insights import build_fetcher, extract_shortcode, parse_public_post_metrics, update_csv_with_metrics
+from app.excel_insights import (
+    build_fetcher,
+    extract_shortcode,
+    extract_youtube_video_id,
+    parse_public_post_metrics,
+    parse_youtube_metrics,
+    update_csv_with_metrics,
+)
 
 POST_HTML = """
 <html><head>
@@ -24,6 +31,24 @@ class FixtureFetcher:
 def test_extract_shortcode_from_instagram_post_url() -> None:
     assert extract_shortcode("https://www.instagram.com/p/ABC123/?utm_source=x") == "ABC123"
     assert extract_shortcode("https://www.instagram.com/reel/XYZ_9/") == "XYZ_9"
+
+
+def test_extract_youtube_video_id_from_watch_and_shorts_urls() -> None:
+    assert extract_youtube_video_id("https://www.youtube.com/watch?v=ABCdef_1234") == "ABCdef_1234"
+    assert extract_youtube_video_id("https://www.youtube.com/shorts/XYZ987_abc") == "XYZ987_abc"
+    assert extract_youtube_video_id("https://youtu.be/Qwerty_123") == "Qwerty_123"
+
+
+def test_parse_youtube_metrics_from_public_html() -> None:
+    html = '{"viewCount":"12345","commentCount":"67"} 89 likes'
+
+    metrics = parse_youtube_metrics("https://www.youtube.com/watch?v=ABCdef_1234", "ABCdef_1234", html)
+
+    assert metrics.platform == "youtube"
+    assert metrics.views == 12345
+    assert metrics.likes == 89
+    assert metrics.comments == 67
+    assert metrics.error is None
 
 
 def test_build_fetcher_rejects_unknown_mode() -> None:
@@ -75,5 +100,5 @@ def test_update_csv_with_metrics(tmp_path: Path) -> None:
 
     with destination.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.reader(handle))
-    assert rows[0][1:10] == ["views", "likes", "comments", "shares", "saves", "reposts", "shortcode", "source", "error"]
-    assert rows[1][1:8] == ["9876", "1500", "60", "22", "33", "4", "ABC123"]
+    assert rows[0][1:11] == ["platform", "views", "likes", "comments", "shares", "saves", "reposts", "shortcode", "source", "error"]
+    assert rows[1][1:9] == ["instagram", "9876", "1500", "60", "22", "33", "4", "ABC123"]

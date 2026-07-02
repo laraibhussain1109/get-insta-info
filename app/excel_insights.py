@@ -4,8 +4,11 @@ import argparse
 import csv
 import importlib.util
 import json
+import os
 import re
 import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Protocol
@@ -117,8 +120,10 @@ class BrowserHtmlFetcher:
                 .map(parseCount)
                 .filter((value) => value !== null);
 
-              if (metrics.likes == null && buttonCounts.length >= 1) metrics.likes = buttonCounts[0];
-              if (metrics.comments == null && buttonCounts.length >= 2) metrics.comments = buttonCounts[1];
+              // Standalone action-bar numbers are unlabeled and can be confused with
+              // unrelated buttons. Use them only for the third action count, which is
+              // shown as repost/reshare in Instagram reel layouts. Likes/comments/views
+              // are only filled from labeled text or structured JSON to avoid bad data.
               if (metrics.reposts == null && buttonCounts.length >= 3) metrics.reposts = buttonCounts[2];
               if (metrics.shares == null && buttonCounts.length >= 3) metrics.shares = buttonCounts[2];
 
@@ -141,6 +146,7 @@ def build_fetcher(mode: str) -> PostHtmlFetcher:
     raise ValueError("fetch mode must be 'http' or 'browser'")
 
 INSTAGRAM_POST_RE = re.compile(r"^/(?:p|reel|tv)/(?P<shortcode>[A-Za-z0-9_-]+)/?")
+YOUTUBE_SHORT_RE = re.compile(r"^/shorts/(?P<video_id>[A-Za-z0-9_-]{6,})")
 DESCRIPTION_LIKES_RE = re.compile(r"(?P<count>[\d.,]+\s*[KMB]?)\s+likes?", re.IGNORECASE)
 DESCRIPTION_COMMENTS_RE = re.compile(r"(?P<count>[\d.,]+\s*[KMB]?)\s+comments?", re.IGNORECASE)
 PUBLIC_METRIC_MARKERS = (
@@ -159,6 +165,7 @@ PUBLIC_METRIC_MARKERS = (
 class PublicPostMetrics:
     url: str
     shortcode: str
+    platform: str = "instagram"
     likes: int | None = None
     comments: int | None = None
     views: int | None = None
@@ -169,6 +176,13 @@ class PublicPostMetrics:
     error: str | None = None
 
 
+def detect_platform(url: str) -> str:
+    host = urlparse(url.strip()).netloc.lower()
+    if "youtu.be" in host or "youtube.com" in host:
+        return "youtube"
+    return "instagram"
+
+
 def extract_shortcode(url: str) -> str:
     parsed = urlparse(url.strip())
     match = INSTAGRAM_POST_RE.match(parsed.path)
@@ -177,6 +191,92 @@ def extract_shortcode(url: str) -> str:
     if not match:
         raise ValueError("URL must include /p/, /reel/, or /tv/ followed by a shortcode")
     return match.group("shortcode")
+
+
+
+def extract_youtube_video_id(url: str) -> str:
+    parsed = urlparse(url.strip())
+    host = parsed.netloc.lower()
+    if "youtu.be" in host:
+        video_id = parsed.path.strip("/").split("/")[0]
+    elif "youtube.com" in host:
+        short_match = YOUTUBE_SHORT_RE.match(parsed.path)
+        video_id = short_match.group("video_id") if short_match else urllib.parse.parse_qs(parsed.query).get("v", [""])[0]
+    else:
+        raise ValueError("URL must be a YouTube video or Shorts link")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{6,}", video_id):
+        raise ValueError("URL must include a valid YouTube video id")
+    return video_id
+
+
+def fetch_public_content_metrics(url: str, fetcher: PostHtmlFetcher | None = None) -> PublicPostMetrics:
+    if detect_platform(url) == "youtube":
+        return fetch_youtube_metrics(url)
+    return fetch_public_post_metrics(url, fetcher=fetcher)
+
+
+def fetch_youtube_metrics(url: str) -> PublicPostMetrics:
+    video_id = extract_youtube_video_id(url)
+    api_key = os.getenv("YOUTUBE_API_KEY")
+    if api_key:
+        return _fetch_youtube_api_metrics(url, video_id, api_key)
+
+    watch_url = f"https://www.youtube.com/watch?v={video_id}"
+    try:
+        html = UrllibHtmlFetcher().fetch(watch_url)
+    except urllib.error.URLError as exc:
+        return PublicPostMetrics(url=url, shortcode=video_id, platform="youtube", error=f"could not fetch YouTube HTML: {exc}")
+    return parse_youtube_metrics(url, video_id, html)
+
+
+def _fetch_youtube_api_metrics(url: str, video_id: str, api_key: str) -> PublicPostMetrics:
+    query = urllib.parse.urlencode({"part": "statistics", "id": video_id, "key": api_key})
+    request = urllib.request.Request(f"https://www.googleapis.com/youtube/v3/videos?{query}")
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, json.JSONDecodeError) as exc:
+        return PublicPostMetrics(url=url, shortcode=video_id, platform="youtube", error=f"could not fetch YouTube API metrics: {exc}")
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not items:
+        return PublicPostMetrics(url=url, shortcode=video_id, platform="youtube", error="YouTube API returned no video statistics")
+    statistics = items[0].get("statistics", {})
+    return PublicPostMetrics(
+        url=url,
+        shortcode=video_id,
+        platform="youtube",
+        views=_optional_int(statistics.get("viewCount")),
+        likes=_optional_int(statistics.get("likeCount")),
+        comments=_optional_int(statistics.get("commentCount")),
+        source="youtube_api",
+    )
+
+
+def parse_youtube_metrics(url: str, video_id: str, html: str) -> PublicPostMetrics:
+    metrics = PublicPostMetrics(url=url, shortcode=video_id, platform="youtube", source="youtube_public_html")
+    patterns = {
+        "views": (r'"viewCount"\s*:\s*"(?P<count>\d+)"', r'(?P<count>[\d,.]+\s*[KMB]?)\s+views?'),
+        "likes": (r'(?P<count>[\d,.]+\s*[KMB]?)\s+likes?',),
+        "comments": (r'"commentCount"\s*:\s*"(?P<count>\d+)"', r'(?P<count>[\d,.]+\s*[KMB]?)\s+comments?'),
+    }
+    for field, field_patterns in patterns.items():
+        for pattern in field_patterns:
+            match = re.search(pattern, html, re.IGNORECASE)
+            if match:
+                setattr(metrics, field, parse_count(match.group("count")))
+                break
+    if metrics.views is None and metrics.likes is None and metrics.comments is None:
+        metrics.error = "no public YouTube counts found; set YOUTUBE_API_KEY for official statistics"
+    return metrics
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def fetch_public_post_metrics(url: str, fetcher: PostHtmlFetcher | None = None) -> PublicPostMetrics:
@@ -239,7 +339,7 @@ def update_workbook_with_metrics(
     workbook = load_workbook(source)
     sheet = workbook.active
 
-    headers = ["views", "likes", "comments", "shares", "saves", "reposts", "shortcode", "source", "error"]
+    headers = ["platform", "views", "likes", "comments", "shares", "saves", "reposts", "shortcode", "source", "error"]
     start_column = sheet.max_column + 1
     for offset, header in enumerate(headers):
         sheet.cell(row=1, column=start_column + offset, value=header)
@@ -249,10 +349,10 @@ def update_workbook_with_metrics(
         if not link:
             continue
         try:
-            metrics = fetch_public_post_metrics(str(link), fetcher=fetcher)
+            metrics = fetch_public_content_metrics(str(link), fetcher=fetcher)
         except ValueError as exc:
             metrics = PublicPostMetrics(url=str(link), shortcode="", error=str(exc))
-        values = [metrics.views, metrics.likes, metrics.comments, metrics.shares, metrics.saves, metrics.reposts, metrics.shortcode, metrics.source, metrics.error]
+        values = [metrics.platform, metrics.views, metrics.likes, metrics.comments, metrics.shares, metrics.saves, metrics.reposts, metrics.shortcode, metrics.source, metrics.error]
         for offset, value in enumerate(values):
             sheet.cell(row=row, column=start_column + offset, value=value)
 
@@ -277,7 +377,7 @@ def update_csv_with_metrics(
     with source.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.reader(handle))
 
-    headers = ["views", "likes", "comments", "shares", "saves", "reposts", "shortcode", "source", "error"]
+    headers = ["platform", "views", "likes", "comments", "shares", "saves", "reposts", "shortcode", "source", "error"]
     if rows:
         rows[0].extend(headers)
     else:
@@ -288,10 +388,11 @@ def update_csv_with_metrics(
             row.extend([""] * len(headers))
             continue
         try:
-            metrics = fetch_public_post_metrics(row[url_index], fetcher=fetcher)
+            metrics = fetch_public_content_metrics(row[url_index], fetcher=fetcher)
         except ValueError as exc:
             metrics = PublicPostMetrics(url=row[url_index], shortcode="", error=str(exc))
         row.extend([
+            metrics.platform,
             _cell(metrics.views),
             _cell(metrics.likes),
             _cell(metrics.comments),
