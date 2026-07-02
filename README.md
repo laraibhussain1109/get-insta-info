@@ -75,3 +75,45 @@ pytest
 6. Add a job queue for refreshes and batch requests.
 7. Add model training pipelines with labeled data from opted-in creators.
 8. Audit all data access and expose confidence/source fields to downstream users.
+
+## Excel/CSV post metrics enrichment
+
+If you have a spreadsheet of public Instagram post links, run the enrichment CLI to append public counts next to each link:
+
+```bash
+python -m app.excel_insights campaign_links.xlsx --url-column A --first-data-row 2 --fetch-mode browser
+```
+
+The command writes a new workbook named `campaign_links_with_insights.xlsx` by default and adds `platform`, `views`, `likes`, `comments`, `shares`, `saves`, `reposts`, `shortcode`, `source`, and `error` columns. CSV files are also supported without extra packages:
+
+```bash
+python -m app.excel_insights campaign_links.csv --url-column A --first-data-row 2 --fetch-mode browser
+```
+
+
+`--fetch-mode http` is the default lightweight fetcher. Use `--fetch-mode browser` when Instagram only exposes public metrics after page rendering or in public JSON/XHR responses. Browser mode requires Playwright:
+
+```bash
+pip install playwright
+python -m playwright install chromium
+```
+
+For `.xlsx` input, install the runtime dependency first:
+
+```bash
+pip install -r requirements.txt
+```
+
+
+### YouTube videos and Shorts
+
+The same spreadsheet command also accepts YouTube watch, `youtu.be`, and Shorts links. For the most reliable YouTube counts, set an official YouTube Data API key before running the tool:
+
+```bash
+export YOUTUBE_API_KEY="your-api-key"
+python -m app.excel_insights campaign_links.xlsx --url-column A --first-data-row 2 --fetch-mode browser
+```
+
+When `YOUTUBE_API_KEY` is not set, the tool falls back to public YouTube page HTML and may only return counts that YouTube includes in the rendered/public page source.
+
+The tool only reads counts that are present in public post HTML/embedded JSON for Instagram `/p/`, `/reel/`, or `/tv/` links, public YouTube HTML, or official YouTube API responses when `YOUTUBE_API_KEY` is configured. Comments are parsed from both public metadata and common embedded JSON fields. Views and shares are parsed from common public embedded JSON field variants, nested media/insights objects, browser-captured public JSON responses, and visible browser-rendered action-bar counts when labels are available. Shares, saves, and reposts are written when Instagram exposes matching public fields, but these values are often private/non-public and will be blank when absent. The tool does not log in, scrape private insights, rotate proxies, bypass access controls, or guarantee counts when Instagram does not expose them publicly.
