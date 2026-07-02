@@ -20,6 +20,16 @@ from app.providers.instagram_crawler import (
 INSTAGRAM_POST_RE = re.compile(r"^/(?:p|reel|tv)/(?P<shortcode>[A-Za-z0-9_-]+)/?")
 DESCRIPTION_LIKES_RE = re.compile(r"(?P<count>[\d.,]+\s*[KMB]?)\s+likes?", re.IGNORECASE)
 DESCRIPTION_COMMENTS_RE = re.compile(r"(?P<count>[\d.,]+\s*[KMB]?)\s+comments?", re.IGNORECASE)
+PUBLIC_METRIC_MARKERS = (
+    "edge_media_to_comment",
+    "video_view_count",
+    "video_play_count",
+    "play_count",
+    "view_count",
+    "share_count",
+    "reshare_count",
+    "save_count",
+)
 
 
 @dataclass(slots=True)
@@ -64,7 +74,7 @@ def parse_public_post_metrics(url: str, shortcode: str, html: str) -> PublicPost
     _merge_metrics(metrics, _metrics_from_description(parser.parsed.description or ""))
 
     for script in parser.parsed.scripts or []:
-        if shortcode not in script and not any(marker in script for marker in ("edge_media_to_comment", "video_view_count")):
+        if shortcode not in script and not any(marker in script for marker in PUBLIC_METRIC_MARKERS):
             continue
         for blob in extract_balanced_json_objects(script):
             _merge_metrics(metrics, _walk_for_shortcode_metrics(blob, shortcode))
@@ -202,8 +212,8 @@ def _metrics_from_description(description: str) -> dict[str, int]:
 def _walk_for_shortcode_metrics(value: object, shortcode: str) -> dict[str, int]:
     if isinstance(value, dict):
         found: dict[str, int] = {}
-        if value.get("shortcode") == shortcode or value.get("code") == shortcode:
-            found.update(_metrics_from_node(value))
+        if _node_has_shortcode(value, shortcode):
+            found.update(_collect_metrics_from_subtree(value))
         for child in value.values():
             found.update(_walk_for_shortcode_metrics(child, shortcode))
         return found
@@ -215,15 +225,42 @@ def _walk_for_shortcode_metrics(value: object, shortcode: str) -> dict[str, int]
     return {}
 
 
+def _node_has_shortcode(value: dict[str, object], shortcode: str) -> bool:
+    return value.get("shortcode") == shortcode or value.get("code") == shortcode
+
+
+def _collect_metrics_from_subtree(value: object) -> dict[str, int]:
+    if isinstance(value, dict):
+        found = _metrics_from_node(value)
+        for child in value.values():
+            found.update(_collect_metrics_from_subtree(child))
+        return found
+    if isinstance(value, list):
+        found: dict[str, int] = {}
+        for item in value:
+            found.update(_collect_metrics_from_subtree(item))
+        return found
+    return {}
+
+
 def _metrics_from_node(node: dict[str, object]) -> dict[str, int]:
     metrics: dict[str, int] = {}
     candidates = {
         "likes": ("edge_liked_by", "edge_media_preview_like", "like_count", "likes_count"),
         "comments": ("edge_media_to_comment", "comment_count", "comments_count"),
-        "views": ("video_view_count", "play_count", "view_count", "ig_play_count"),
-        "shares": ("share_count", "shares_count"),
-        "saves": ("save_count", "saved_count", "saves_count"),
-        "reposts": ("repost_count", "reshare_count", "reshare_count_v2", "clips_reshare_count"),
+        "views": (
+            "video_view_count",
+            "video_play_count",
+            "play_count",
+            "view_count",
+            "ig_play_count",
+            "viewCount",
+            "playCount",
+            "videoViewCount",
+        ),
+        "shares": ("share_count", "shares_count", "shareCount", "reshare_count", "reshareCount"),
+        "saves": ("save_count", "saved_count", "saves_count", "saveCount"),
+        "reposts": ("repost_count", "repostCount", "reshare_count", "reshare_count_v2", "clips_reshare_count"),
     }
     for metric_name, keys in candidates.items():
         value = _first_count_for_keys(node, keys)
@@ -238,8 +275,12 @@ def _first_count_for_keys(node: dict[str, object], keys: tuple[str, ...]) -> int
         count = count_from_edge(value)
         if count:
             return count
-        if isinstance(value, float):
+        if isinstance(value, int | float):
             return int(value)
+        if isinstance(value, str):
+            parsed = parse_count(value)
+            if parsed:
+                return parsed
     return None
 
 

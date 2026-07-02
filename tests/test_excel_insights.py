@@ -7,7 +7,7 @@ POST_HTML = """
 <meta property="og:description" content="1,234 likes, 56 comments - Campaign post">
 <script>
 window.__post = {"items":[{"shortcode":"ABC123","is_video":true,"video_view_count":9876,
-"edge_liked_by":{"count":1500},"edge_media_to_comment":{"count":60},"share_count":22,"save_count":33,"repost_count":4}]};
+"edge_liked_by":{"count":1500},"edge_media_to_comment":{"count":60},"insights":{"video_play_count":"9,876","shareCount":"22","save_count":33,"repostCount":4}}]};
 </script>
 </head></html>
 """
